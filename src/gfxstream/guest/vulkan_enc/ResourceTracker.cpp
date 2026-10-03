@@ -3188,6 +3188,24 @@ static uint32_t getVirglFormat(VkFormat vkFormat) {
         case VK_FORMAT_A2B10G10R10_UNORM_PACK32:
             virglFormat = VIRGL_FORMAT_R10G10B10A2_UNORM;
             break;
+        case VK_FORMAT_R16G16B16A16_UNORM:
+            virglFormat = VIRGL_FORMAT_R16G16B16A16_UNORM;
+            break;
+        case VK_FORMAT_R16G16B16A16_SNORM:
+            virglFormat = VIRGL_FORMAT_R16G16B16A16_SNORM;
+            break;
+        case VK_FORMAT_R16G16B16A16_USCALED:
+            virglFormat = VIRGL_FORMAT_R16G16B16A16_USCALED;
+            break;
+        case VK_FORMAT_R16G16B16A16_SSCALED:
+            virglFormat = VIRGL_FORMAT_R16G16B16A16_SSCALED;
+            break;
+        case VK_FORMAT_R16G16B16A16_UINT:
+            virglFormat = VIRGL_FORMAT_R16G16B16A16_UINT;
+            break;
+        case VK_FORMAT_R16G16B16A16_SINT:
+            virglFormat = VIRGL_FORMAT_R16G16B16A16_SINT;
+            break;
         case VK_FORMAT_R16G16B16A16_SFLOAT:
             virglFormat = VIRGL_FORMAT_R16G16B16A16_FLOAT;
             break;
