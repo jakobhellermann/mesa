@@ -40,6 +40,7 @@ VirtGpuKumquatDevice::VirtGpuKumquatDevice(enum VirtGpuCapset capset, int32_t de
     struct drm_kumquat_context_init init = {0};
     struct drm_kumquat_context_set_param ctx_set_params[3] = {{0}};
     const char* processName = nullptr;
+    const char* configured_socket = getenv("VIRTGPU_KUMQUAT_SOCKET_PATH");
     std::string gpu_socket_path = "/tmp/kumquat-gpu-";
 
     memset(&mCaps, 0, sizeof(struct VirtGpuCaps));
@@ -48,7 +49,9 @@ VirtGpuKumquatDevice::VirtGpuKumquatDevice(enum VirtGpuCapset capset, int32_t de
     processName = getprogname();
 #endif
 
-    if (descriptor >= 0) {
+    if (configured_socket && configured_socket[0]) {
+        gpu_socket_path = configured_socket;
+    } else if (descriptor >= 0) {
         gpu_socket_path.append(std::to_string(descriptor));
         mDescriptor = descriptor;
     } else {
