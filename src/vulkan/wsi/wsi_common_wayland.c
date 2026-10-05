@@ -409,6 +409,14 @@ wsi_wl_display_add_vk_format(struct wsi_wl_display *display,
 {
    assert(flags & (WSI_WL_FMT_ALPHA | WSI_WL_FMT_OPAQUE));
 
+   /* HACK: the gfxstream guest ICD's blob export path reports wrong stride
+    * metadata for >8bpc formats, which the compositor then rejects
+    * ("Invalid stride"). Offer SDR formats only in that configuration. */
+   if (getenv("VIRTGPU_KUMQUAT") &&
+       (format == VK_FORMAT_R16G16B16A16_SFLOAT ||
+        format == VK_FORMAT_R16G16B16A16_UNORM))
+      return NULL;
+
    /* Don't add a format that's already in the list */
    struct wsi_wl_format *f = find_format(formats, format);
    if (f) {
