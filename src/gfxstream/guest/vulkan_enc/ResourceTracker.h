@@ -121,6 +121,19 @@ class VkEncoder;
 
 class ResourceTracker {
    public:
+    // --- pre-checkpoint flush (snapshot cooperation) ---
+    // Batched descriptor set updates are deferred until the referencing
+    // command buffer is submitted. A set that is only *allocated* when the
+    // process is frozen for a snapshot never reached the host, so the
+    // host-side snapshot skips it and restores it as an EMPTY set. An
+    // Process-snapshot tools walk the loaded shared objects right
+    // before freezing and call the exported `pre_checkpoint_flush`
+    // wherever it exists, forcing the pending commits out first.
+    void registerQueueForPreCheckpointFlush(VkDevice device, VkQueue queue);
+    void registerPendingDescriptorSetsForCheckpointFlush(VkDevice device,
+                                                          const VkDescriptorSet* sets,
+                                                          uint32_t count);
+    void flushPendingDescriptorUpdatesForCheckpoint();
     ResourceTracker();
     ~ResourceTracker();
     static ResourceTracker* get();

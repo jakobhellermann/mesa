@@ -484,6 +484,12 @@ static VkResult gfxstream_vk_queue_init(struct gfxstream_vk_device* dev,
 
     gfxstream_queue->device = dev;
 
+    // Remember one queue per device so the pre-checkpoint flush can
+    // commit still-deferred batched descriptor sets right before a
+    // process snapshot freezes the process (see ResourceTracker.h).
+    gfxstream::vk::ResourceTracker::get()->registerQueueForPreCheckpointFlush(
+        gfxstream_vk_device_to_handle(dev), queue);
+
     return VK_SUCCESS;
 }
 

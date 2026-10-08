@@ -1,0 +1,17 @@
+{
+	global:
+		vk_icdGetInstanceProcAddr;
+		vk_icdGetPhysicalDeviceProcAddr;
+		vk_icdNegotiateLoaderICDInterfaceVersion;
+
+		# Contract symbol for process-snapshot tools: they walk the loaded
+		# shared objects right before freezing the process and call this
+		# wherever it is exported (see ResourceTracker.cpp,
+		# flushPendingDescriptorUpdatesForCheckpoint).
+		pre_checkpoint_flush;
+
+	local:
+		# When static linking LLVM, all its symbols are public API.
+		# That may cause symbol collision, so explicitly demote everything.
+		*;
+};

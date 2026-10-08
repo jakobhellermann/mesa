@@ -40,6 +40,15 @@ endif
 # weak_import does not help - it wants a symbol missing from a dylib, not one
 # missing everywhere - so defer the lookup instead.
 gfxstream_vk_link_args = []
+if with_ld_version_script
+  # Same exports as src/vulkan/vulkan.sym plus pre_checkpoint_flush, the
+  # contract symbol that process-snapshot tools call right before
+  # freezing the process (see ResourceTracker.cpp).
+  gfxstream_vk_link_args += [
+    '-Wl,--version-script',
+    join_paths(meson.current_source_dir(), 'gfxstream_vk.sym'),
+  ]
+endif
 if host_machine.system() == 'darwin'
   gfxstream_vk_link_args += '-Wl,-undefined,dynamic_lookup'
 endif
@@ -64,8 +73,8 @@ lib_vulkan_gfxstream = shared_library(
         libconnection_manager,
         libaemu,
     ],
-    link_args: [vulkan_icd_link_args, ld_args_bsymbolic, ld_args_gc_sections] + gfxstream_vk_link_args,
-    link_depends: vulkan_icd_link_depends,
+    link_args: [ld_args_bsymbolic, ld_args_gc_sections] + gfxstream_vk_link_args,
+    link_depends: files('gfxstream_vk.sym'),
     dependencies: gfxstream_deps,
     install: true,
 )

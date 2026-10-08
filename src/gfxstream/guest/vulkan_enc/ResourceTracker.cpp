@@ -102,6 +102,14 @@ T* vk_extract_struct(void* start, VkStructureType sType) {
     return nullptr;
 }
 
+// Pre-checkpoint flush contract for external process-snapshot tools:
+// the tool walks all loaded shared objects right before freezing and
+// calls `pre_checkpoint_flush` wherever it is exported (see
+// flushPendingDescriptorUpdatesForCheckpoint in ResourceTracker.h).
+// Declared at global scope: the definition lives after the
+// gfxstream::vk namespaces.
+extern "C" void pre_checkpoint_flush(void) __attribute__((visibility("default")));
+
 namespace gfxstream {
 namespace vk {
 namespace {
@@ -853,6 +861,23 @@ static void collectAllPendingDescriptorSetsBottomUp(const std::vector<VkCommandB
         allDs.insert(pendingDescriptorSets->sets.begin(), pendingDescriptorSets->sets.end());
     }
 }
+
+// --- pre-checkpoint flush (snapshot-cooperation) ---
+// Per-device registry of batched (deferred) descriptor sets that have not
+// reached the host yet. A process-snapshot tool freezes the process at
+// frame boundaries; sets that are only allocated at that point would
+// restore as empty host sets (see ResourceTracker.h). The flush hook
+// services them right before the freeze.
+namespace {
+struct PreCheckpointFlushEntry {
+    VkQueue queue = VK_NULL_HANDLE;
+    std::unordered_set<VkDescriptorSet> sets;
+};
+std::mutex gPreCheckpointFlushMutex;
+std::unordered_map<VkDevice, PreCheckpointFlushEntry> gPreCheckpointFlushPending;
+
+
+}  // namespace
 
 static void commitDescriptorSetUpdates(void* context, VkQueue queue,
                                        const std::unordered_set<VkDescriptorSet>& sets) {
@@ -5458,6 +5483,9 @@ VkResult ResourceTracker::on_vkAllocateDescriptorSets(
 
         if (poolAllocResult != VK_SUCCESS) return poolAllocResult;
 
+        registerPendingDescriptorSetsForCheckpointFlush(device, sets,
+                                                         ci->descriptorSetCount);
+
         for (uint32_t i = 0; i < ci->descriptorSetCount; ++i) {
             register_VkDescriptorSet(sets[i]);
             VkDescriptorSetLayout setLayout =
@@ -6477,6 +6505,90 @@ void ResourceTracker::flushStagingStreams(void* context, VkQueue queue, uint32_t
 
     for (auto cb : toFlush) {
         resetCommandBufferPendingTopology(cb);
+    }
+}
+
+void ResourceTracker::registerQueueForPreCheckpointFlush(VkDevice device, VkQueue queue) {
+    std::lock_guard<std::mutex> lock(gPreCheckpointFlushMutex);
+    gPreCheckpointFlushPending[device].queue = queue;
+}
+
+void ResourceTracker::registerPendingDescriptorSetsForCheckpointFlush(VkDevice device,
+                                                                      const VkDescriptorSet* sets,
+                                                                      uint32_t count) {
+    std::lock_guard<std::mutex> lock(gPreCheckpointFlushMutex);
+    auto& entry = gPreCheckpointFlushPending[device];
+    for (uint32_t i = 0; i < count; ++i) {
+        entry.sets.insert(sets[i]);
+    }
+}
+
+void ResourceTracker::flushPendingDescriptorUpdatesForCheckpoint() {
+    // Snapshot the registry, then service each device's still-pending sets
+    // through the same commit path the normal submit flow uses. Frees and
+    // normal submits shrink the pending state concurrently; stale entries
+    // are filtered out by liveness and pending-ness below.
+    std::unordered_map<VkDevice, std::unordered_set<VkDescriptorSet>> toService;
+    std::unordered_map<VkDevice, VkQueue> queues;
+    {
+        std::lock_guard<std::mutex> lock(gPreCheckpointFlushMutex);
+        for (auto& [device, entry] : gPreCheckpointFlushPending) {
+            if (!entry.queue || entry.sets.empty()) continue;
+            toService[device] = entry.sets;
+            queues[device] = entry.queue;
+        }
+    }
+
+    for (auto& [device, sets] : toService) {
+        std::unordered_set<VkDescriptorSet> live;
+        {
+            std::lock_guard<std::recursive_mutex> lock(mLock);
+            for (auto set : sets) {
+                if (info_VkDescriptorSet.find(set) == info_VkDescriptorSet.end()) continue;
+                struct goldfish_VkDescriptorSet* ds = gfxstream_vk_descriptor_set_from_handle(set);
+                if (!ds || !ds->reified) continue;
+                ReifiedDescriptorSet* reified = ds->reified;
+                if (!reified->allocationPending) {
+                    bool hasPendingWrites = false;
+                    for (auto& binding : reified->allWrites.bindings) {
+                        if (auto* elementWrites =
+                                std::get_if<std::vector<DescriptorBindingElementWrite>>(
+                                    &binding.elements)) {
+                            for (auto& write : *elementWrites) {
+                                if (write.type != DescriptorWriteType::Empty) {
+                                    hasPendingWrites = true;
+                                    break;
+                                }
+                            }
+                        } else if (auto* blockWrite =
+                                       std::get_if<DescriptorInlineUniformBlockWrite>(
+                                           &binding.elements)) {
+                            hasPendingWrites = blockWrite->pendingWrite;
+                        }
+                        if (hasPendingWrites) break;
+                    }
+                    if (!hasPendingWrites) continue;
+                }
+                live.insert(set);
+            }
+        }
+        if (live.empty()) continue;
+
+        VkEncoder* enc = ResourceTracker::getThreadLocalEncoder();
+        {
+            std::lock_guard<std::recursive_mutex> lock(mLock);
+            commitDescriptorSetUpdates(enc, queues[device], live);
+        }
+        // The commit path clears allocationPending and consumes the
+        // writes; drop the serviced sets from the registry so it does not
+        // grow without bound.
+        {
+            std::lock_guard<std::mutex> lock(gPreCheckpointFlushMutex);
+            auto it = gPreCheckpointFlushPending.find(device);
+            if (it != gPreCheckpointFlushPending.end()) {
+                for (auto set : live) it->second.sets.erase(set);
+            }
+        }
     }
 }
 
@@ -8614,3 +8726,12 @@ LIST_TRIVIAL_TRANSFORMED_TYPES(DEFINE_TRANSFORMED_TYPE_IMPL)
 
 }  // namespace vk
 }  // namespace gfxstream
+
+
+// Pre-checkpoint flush contract for external process-snapshot tools:
+// they walk the loaded shared objects right before freezing the
+// process and call this wherever it is exported.
+__attribute__((used, visibility("default")))
+extern "C" void pre_checkpoint_flush(void) {
+    gfxstream::vk::ResourceTracker::get()->flushPendingDescriptorUpdatesForCheckpoint();
+}
