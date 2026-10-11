@@ -327,6 +327,22 @@ def api_special_implementation_vkCmdBeginRenderPass(api, cgen):
     cgen.stmt("std::lock_guard<std::mutex> lock(mReconstructionMutex)")
     cgen.stmt("mReconstruction.addApiCallDependencyOnVkObject(apiCallHandle, (uint64_t)(uintptr_t)unboxed_to_boxed_non_dispatchable_VkFramebuffer( pRenderPassBegin->framebuffer))")
 
+def emit_rendering_attachment_view_dependencies(cgen, attachment):
+    for field in ("imageView", "resolveImageView"):
+        cgen.beginIf("%s%s != VK_NULL_HANDLE" % (attachment, field))
+        cgen.stmt("mReconstruction.addApiCallDependencyOnVkObject(apiCallHandle, (uint64_t)(uintptr_t)unboxed_to_boxed_non_dispatchable_VkImageView(%s%s))" % (attachment, field))
+        cgen.endIf()
+
+def api_special_implementation_vkCmdBeginRendering(api, cgen):
+    cgen.stmt("std::lock_guard<std::mutex> lock(mReconstructionMutex)")
+    cgen.beginFor("uint32_t i = 0", "i < pRenderingInfo->colorAttachmentCount", "++i")
+    emit_rendering_attachment_view_dependencies(cgen, "pRenderingInfo->pColorAttachments[i].")
+    cgen.endFor()
+    for attachment in ("pDepthAttachment", "pStencilAttachment"):
+        cgen.beginIf("pRenderingInfo->%s" % attachment)
+        emit_rendering_attachment_view_dependencies(cgen, "pRenderingInfo->%s->" % attachment)
+        cgen.endIf()
+
 def api_special_implementation_vkCmdCopyBufferToImage(api, cgen):
     cgen.stmt("std::lock_guard<std::mutex> lock(mReconstructionMutex)")
     cgen.stmt("mReconstruction.addApiCallDependencyOnVkObject(apiCallHandle, (uint64_t)(uintptr_t)unboxed_to_boxed_non_dispatchable_VkBuffer(srcBuffer))")
@@ -396,6 +412,8 @@ apiSpecialImplementation = {
     "vkCmdPipelineBarrier": api_special_implementation_vkCmdPipelineBarrier,
     "vkCmdBeginRenderPass": api_special_implementation_vkCmdBeginRenderPass,
     "vkCmdBeginRenderPass2": api_special_implementation_vkCmdBeginRenderPass,
+    "vkCmdBeginRendering": api_special_implementation_vkCmdBeginRendering,
+    "vkCmdBeginRenderingKHR": api_special_implementation_vkCmdBeginRendering,
     "vkUpdateDescriptorSetWithTemplateSizedGOOGLE": api_special_implementation_vkUpdateDescriptorSetWithTemplateSizedGOOGLE,
     "vkUpdateDescriptorSetWithTemplateSized2GOOGLE": api_special_implementation_vkUpdateDescriptorSetWithTemplateSizedGOOGLE,
 }
