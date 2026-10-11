@@ -432,11 +432,26 @@ void AddressSpaceStream::ensureType1Finished() {
     MESA_TRACE_SCOPE("ensureType1Finished");
 
     uint32_t currAvailRead = ring_buffer_available_read(m_context.to_host, 0);
+    uint32_t stalledIters = 0;
 
     while (currAvailRead) {
         backoff();
         ring_buffer_yield();
-        currAvailRead = ring_buffer_available_read(m_context.to_host, 0);
+        uint32_t nextAvailRead = ring_buffer_available_read(m_context.to_host, 0);
+        if (nextAvailRead == currAvailRead) {
+            // No drain progress: the wakeup for the pending bytes may have
+            // been lost — the writer's notification is skipped while the
+            // host reports RENDERING, and the host can go idle in that
+            // window, leaving the pending bytes unnoticed. Re-notify after
+            // a bounded number of stalled iterations; harmless whenever
+            // the host is already awake.
+            if (++stalledIters % 100 == 0) {
+                notifyAvailable();
+            }
+        } else {
+            stalledIters = 0;
+        }
+        currAvailRead = nextAvailRead;
         if (isInError()) {
             return;
         }
