@@ -191,6 +191,10 @@ struct wsi_image {
    int dma_buf_fd;
 #endif
    void *cpu_map;
+   /* Memory behind cpu_map when it is not host coherent, invalidated before
+    * the CPU reads a presented image.
+    */
+   VkDeviceMemory cpu_map_noncoherent_memory;
 
    VkQueryPool query_pool;
    VkCommandBuffer *timestamp_cmd_buffers;

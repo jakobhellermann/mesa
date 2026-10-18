@@ -235,6 +235,7 @@ wsi_device_init(struct wsi_device *wsi,
    WSI_GET_CB(WaitForFences);
    WSI_GET_CB(MapMemory);
    WSI_GET_CB(UnmapMemory);
+   WSI_GET_CB(InvalidateMappedMemoryRanges);
    if (wsi->has_present_wait)
       WSI_GET_CB(WaitSemaphores);
 #undef WSI_GET_CB
@@ -2889,6 +2890,18 @@ wsi_common_queue_present(const struct wsi_device *wsi,
       if (wsi->sw) {
          wsi->WaitForFences(vk_device_to_handle(dev),
                             1, &swapchain->fences[image_index], true, ~0ull);
+
+         if (image->cpu_map && image->cpu_map_noncoherent_memory) {
+            const VkMappedMemoryRange range = {
+               .sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE,
+               .memory = image->cpu_map_noncoherent_memory,
+               .size = VK_WHOLE_SIZE,
+            };
+            results[i] = wsi->InvalidateMappedMemoryRanges(vk_device_to_handle(dev),
+                                                           1, &range);
+            if (results[i] != VK_SUCCESS)
+               continue;
+         }
       }
 
       const VkPresentRegionKHR *region = NULL;
@@ -3077,11 +3090,28 @@ wsi_select_device_memory_type(const struct wsi_device *wsi,
                                  0 /* deny_props */, type_bits);
 }
 
+static bool
+wsi_memory_type_is_coherent(const struct wsi_device *wsi, uint32_t type)
+{
+   return wsi->memory_props.memoryTypes[type].propertyFlags &
+          VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+}
+
 static uint32_t
 wsi_select_host_memory_type(const struct wsi_device *wsi,
                             uint32_t type_bits)
 {
    VkMemoryPropertyFlags req_props = VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+
+   /* Drivers without coherent memory (gfxstream copying through the command
+    * stream) get any host visible type, cpu_map_noncoherent_memory covers
+    * the reads.
+    */
+   bool has_coherent = false;
+   u_foreach_bit(t, type_bits)
+      has_coherent |= wsi_memory_type_is_coherent(wsi, t);
+   if (!has_coherent)
+      req_props = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
 
    if (wsi->sw)
       req_props |= VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
@@ -3173,6 +3203,8 @@ wsi_create_buffer_blit_context(const struct wsi_swapchain *chain,
                                 &chain->alloc, &image->blit.memory);
    if (result != VK_SUCCESS)
       return result;
+   if (!wsi_memory_type_is_coherent(wsi, buf_mem_info.memoryTypeIndex))
+      image->cpu_map_noncoherent_memory = image->blit.memory;
 
    result = wsi->BindBufferMemory(chain->device, image->blit.buffer,
                                   image->blit.memory, 0);
@@ -3562,6 +3594,8 @@ wsi_create_cpu_linear_image_mem(const struct wsi_swapchain *chain,
                                 &chain->alloc, &image->memory);
    if (result != VK_SUCCESS)
       return result;
+   if (!wsi_memory_type_is_coherent(wsi, memory_info.memoryTypeIndex))
+      image->cpu_map_noncoherent_memory = image->memory;
 
    result = wsi->MapMemory(chain->device, image->memory,
                            0, VK_WHOLE_SIZE, 0, &image->cpu_map);

@@ -255,6 +255,7 @@ struct wsi_device {
    WSI_CB(WaitForFences);
    WSI_CB(MapMemory);
    WSI_CB(UnmapMemory);
+   WSI_CB(InvalidateMappedMemoryRanges);
    WSI_CB(WaitSemaphores);
 #undef WSI_CB
 
