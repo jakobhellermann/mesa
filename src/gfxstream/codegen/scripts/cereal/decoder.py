@@ -575,6 +575,25 @@ def decode_vkFlushMappedMemoryRanges(typeInfo: VulkanTypeInfo, api, cgen):
     cgen.stmt("// where usingDirectMapping fails to set the proper packet size,");
     cgen.stmt("// meaning we can read off the end of the packet.");
     cgen.stmt("uint64_t sizeLeft = end - *readStreamPtrPtr")
+    # A partial packet is decoded again from its start once more data arrived:
+    # wait for the contents of every range before copying any, or the complete
+    # leading ranges are copied again on every retry.
+    cgen.stmt("const uint8_t* scanPtr = *readStreamPtrPtr")
+    cgen.stmt("uint64_t scanLeft = sizeLeft")
+    cgen.beginFor("uint32_t i = 0", "i < memoryRangeCount", "++i")
+    cgen.stmt("uint64_t scanSize = 0")
+    cgen.beginIf("scanLeft >= sizeof(uint64_t)")
+    cgen.stmt("memcpy(&scanSize, scanPtr, sizeof(uint64_t))")
+    cgen.endIf()
+    cgen.beginIf("scanLeft < sizeof(uint64_t) || scanLeft - sizeof(uint64_t) < scanSize")
+    cgen.beginIf("m_prevSeqno")
+    cgen.stmt("m_prevSeqno = m_prevSeqno.value() - 1")
+    cgen.endIf()
+    cgen.stmt("return ptr - (unsigned char*)buf")
+    cgen.endIf()
+    cgen.stmt("scanPtr += sizeof(uint64_t) + scanSize")
+    cgen.stmt("scanLeft -= sizeof(uint64_t) + scanSize")
+    cgen.endFor()
     cgen.beginFor("uint32_t i = 0", "i < memoryRangeCount", "++i")
     cgen.beginIf("sizeLeft < sizeof(uint64_t)")
     cgen.beginIf("m_prevSeqno")
