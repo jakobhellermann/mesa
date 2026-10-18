@@ -1595,7 +1595,9 @@ void ResourceTracker::setThreadingCallbacks(const ResourceTracker::ThreadingCall
     ResourceTracker::threadingCallbacks = callbacks;
 }
 
-bool ResourceTracker::usingDirectMapping() const { return true; }
+bool ResourceTracker::usingDirectMapping() const {
+    return !mCaps.vulkanCapset.hostVisibleMemoryCopy;
+}
 
 uint32_t ResourceTracker::getStreamFeatures() const { return ResourceTracker::streamFeatureBits; }
 
@@ -3307,13 +3309,20 @@ VkResult ResourceTracker::allocateCoherentMemory(VkDevice device,
 
     bool dedicated = deviceAddressMemoryAllocation;
 
-    if (mCaps.vulkanCapset.deferredMapping || mCaps.params[kParamCreateGuestHandle])
-        dedicated = true;
+    // Flushes and invalidates name the guest VkDeviceMemory to the host, so in copy mode every
+    // allocation must be a host allocation of its own.
+    const bool copyMode = !usingDirectMapping();
+    const bool blobMode =
+        !copyMode && (mCaps.vulkanCapset.deferredMapping || mCaps.params[kParamCreateGuestHandle]);
+
+    if (copyMode || blobMode) dedicated = true;
 
     VkMemoryAllocateInfo hostAllocationInfo = vk_make_orphan_copy(*pAllocateInfo);
     vk_struct_chain_iterator structChainIter = vk_make_chain_iterator(&hostAllocationInfo);
 
-    if (mCaps.vulkanCapset.deferredMapping || mCaps.params[kParamCreateGuestHandle]) {
+    if (copyMode) {
+        // The host rounds up its own allocation for its page wise copies.
+    } else if (blobMode) {
         hostAllocationInfo.allocationSize =
             ALIGN_POT(pAllocateInfo->allocationSize, mCaps.vulkanCapset.blobAlignment);
     } else if (dedicated) {
@@ -3341,7 +3350,7 @@ VkResult ResourceTracker::allocateCoherentMemory(VkDevice device,
         }
     }
 
-    if (mCaps.params[kParamCreateGuestHandle]) {
+    if (!copyMode && mCaps.params[kParamCreateGuestHandle]) {
         struct VirtGpuCreateBlob createBlob = {0};
         struct VirtGpuExecBuffer exec = {};
         VirtGpuDevice* instance = VirtGpuDevice::getInstance();
@@ -3374,7 +3383,7 @@ VkResult ResourceTracker::allocateCoherentMemory(VkDevice device,
         }
 
         guestBlob->wait();
-    } else if (mCaps.vulkanCapset.deferredMapping) {
+    } else if (blobMode) {
         createBlobInfo.blobId = ++mAtomicId;
         createBlobInfo.blobMem = kBlobMemHost3d;
         vk_append_struct(&structChainIter, &createBlobInfo);
@@ -3391,9 +3400,23 @@ VkResult ResourceTracker::allocateCoherentMemory(VkDevice device,
     VK_FROM_HANDLE(gfxstream_vk_device_memory, gfxstream_memory, mem);
 
     struct VkDeviceMemory_Info info;
-    if (mCaps.vulkanCapset.deferredMapping || mCaps.params[kParamCreateGuestHandle]) {
+    if (blobMode) {
         gfxstream_memory->mapped_size = pAllocateInfo->allocationSize;
         info.blobId = createBlobInfo.blobId;
+    }
+
+    if (copyMode) {
+        const size_t shadowSize = ALIGN_POT(pAllocateInfo->allocationSize, kLargestPageSize);
+        void* shadow = aligned_alloc(kLargestPageSize, shadowSize);
+        if (!shadow) {
+            mesa_loge("Failed to allocate coherent memory: no shadow of %zu bytes.", shadowSize);
+            enc->vkFreeMemory(device, mem, nullptr, true /* do lock */);
+            return VK_ERROR_OUT_OF_HOST_MEMORY;
+        }
+        memset(shadow, 0, shadowSize);
+        info.shadow = shadow;
+        gfxstream_memory->mapped = shadow;
+        gfxstream_memory->mapped_size = pAllocateInfo->allocationSize;
     }
 
     if (guestBlob) {
@@ -3423,7 +3446,7 @@ VkResult ResourceTracker::allocateCoherentMemory(VkDevice device,
         info_VkDeviceMemory[mem] = info;
     }
 
-    if (mCaps.vulkanCapset.deferredMapping || mCaps.params[kParamCreateGuestHandle]) {
+    if (copyMode || blobMode) {
         *pMemory = mem;
         return host_res;
     }
@@ -3458,7 +3481,8 @@ VkResult ResourceTracker::getCoherentMemory(const VkMemoryAllocateInfo* pAllocat
         ((allocFlagsInfoPtr->flags & VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT) ||
          (allocFlagsInfoPtr->flags & VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_CAPTURE_REPLAY_BIT));
 
-    if (mCaps.vulkanCapset.deferredMapping || mCaps.params[kParamCreateGuestHandle])
+    if (!usingDirectMapping() || mCaps.vulkanCapset.deferredMapping ||
+        mCaps.params[kParamCreateGuestHandle])
         dedicated = true;
 
     CoherentMemoryPtr coherentMemory = nullptr;
@@ -4329,6 +4353,11 @@ void ResourceTracker::on_vkFreeMemory(void* context, VkDevice device, VkDeviceMe
     if (info.importedFd >= 0) {
         close(info.importedFd);
         info.importedFd = -1;
+    }
+    if (info.shadow) {
+        free(info.shadow);
+        info.shadow = nullptr;
+        gfxstream_memory->mapped = nullptr;
     }
 
     emitDeviceMemoryReport(info_VkDevice[device],

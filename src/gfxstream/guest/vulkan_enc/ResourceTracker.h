@@ -787,6 +787,8 @@ class ResourceTracker {
         CoherentMemoryPtr coherentMemory = nullptr;
         VirtGpuResourcePtr blobPtr = nullptr;
         int importedFd = -1;
+        // Guest copy of host visible memory in hostVisibleMemoryCopy mode.
+        void* shadow = nullptr;
     };
 
     struct VkCommandBuffer_Info {
