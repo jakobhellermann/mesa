@@ -2121,8 +2121,9 @@ VkResult VkEncoder::vkFlushMappedMemoryRanges(VkDevice device, uint32_t memoryRa
                 continue;
             };
             auto hostPtr = gfxstream_vk_device_memory_get_ptr(memory);
+            auto ptrSize = gfxstream_vk_device_memory_get_ptr_size(memory);
             auto actualSize =
-                size == VK_WHOLE_SIZE ? gfxstream_vk_device_memory_get_ptr_size(memory) : size;
+                size == VK_WHOLE_SIZE ? (offset <= ptrSize ? ptrSize - offset : 0) : size;
             if (!hostPtr) {
                 stream->write(&streamSize, sizeof(uint64_t));
                 continue;
@@ -2223,21 +2224,20 @@ VkResult VkEncoder::vkInvalidateMappedMemoryRanges(VkDevice device, uint32_t mem
             auto size = range.size;
             auto offset = range.offset;
             uint64_t streamSize = 0;
-            if (!memory) {
-                stream->read(&streamSize, sizeof(uint64_t));
-                continue;
-            };
-            auto hostPtr = gfxstream_vk_device_memory_get_ptr(memory);
-            auto actualSize =
-                size == VK_WHOLE_SIZE ? gfxstream_vk_device_memory_get_ptr_size(memory) : size;
-            if (!hostPtr) {
-                stream->read(&streamSize, sizeof(uint64_t));
-                continue;
-            };
-            streamSize = actualSize;
             stream->read(&streamSize, sizeof(uint64_t));
-            uint8_t* targetRange = hostPtr + offset;
-            stream->read(targetRange, actualSize);
+            auto hostPtr = memory ? gfxstream_vk_device_memory_get_ptr(memory) : nullptr;
+            auto ptrSize = memory ? gfxstream_vk_device_memory_get_ptr_size(memory) : 0;
+            uint64_t capacity = (hostPtr && offset <= ptrSize) ? ptrSize - offset : 0;
+            if (size != VK_WHOLE_SIZE && size < capacity) capacity = size;
+            uint64_t copySize = streamSize < capacity ? streamSize : capacity;
+            if (copySize) stream->read(hostPtr + offset, copySize);
+            for (uint64_t skipped = copySize; skipped < streamSize;) {
+                uint8_t scratch[4096];
+                uint64_t chunk =
+                    streamSize - skipped < sizeof(scratch) ? streamSize - skipped : sizeof(scratch);
+                stream->read(scratch, chunk);
+                skipped += chunk;
+            }
         }
     }
     ++encodeCount;
