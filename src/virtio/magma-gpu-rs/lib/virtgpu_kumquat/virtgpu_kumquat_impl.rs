@@ -145,6 +145,7 @@ impl VirtGpuKumquat {
             VIRTGPU_KUMQUAT_PARAM_SUPPORTED_CAPSET_IDS => self.capset_mask,
             VIRTGPU_KUMQUAT_PARAM_EXPLICIT_DEBUG_NAME => 0,
             VIRTGPU_KUMQUAT_PARAM_FENCE_PASSING => 1,
+            VIRTGPU_KUMQUAT_PARAM_CREATE_GUEST_HANDLE => 1,
             _ => return Err(Error::Unsupported),
         };
 
